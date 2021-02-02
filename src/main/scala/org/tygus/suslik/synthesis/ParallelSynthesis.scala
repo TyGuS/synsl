@@ -26,13 +26,10 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
 
     val master = system.actorOf(Props(new Master), name = "Master")
 
-    // TODO: uncomment
-    //  val nWorkers = config.parallel.get
-    val nWorkers = 4
+    val nWorkers = config.parallel.get
     val actorRefs: List[ActorRef] = master ::
       (for (i <- 0 until nWorkers)
-        // TODO
-//        yield system.actorOf(Props(new Worker(master)), name = s"Worker$i")
+        // TODO rename to Worker$i
         yield system.actorOf(Props(new Worker(master)), name = s"$i")
       ).toList
 
@@ -90,10 +87,16 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
         sendWork()
 
       case TaskDone(w, (sol, newNodes, isFailed)) =>
+        if (!config.printDerivations & sol.isEmpty & isFailed) {
+          println(getColor(w.path.name) + "Worker" + Console.RED + s" cannot expand goal: BACKTRACK")
+        }
         var solution: Option[Solution] = None
         for (optionTask <- workers.get(w)) {
           for (node <- optionTask) {
-            println(s"${w.path.name}: ${node.id}")
+            print(Console.WHITE + s"${worklist.map{_.id}.toString()}")
+            if (!config.printDerivations) {
+              println(getColor(w.path.name) + s"--------Done: ${node.id} puts ${newNodes.map{_.id}.toString()}")
+            }
             worklist = newNodes ++ worklist
             solution = sol.flatMap(node.succeed(_))
             if (isFailed) node.fail
@@ -126,7 +129,7 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
           outer ! SearchDone(None) // No goals to try & no goals in progress: synthesis failed
         }
       } else {
-        val nodes = selectNode(idleWorkers.size) // Select next nodes to expand
+        val nodes = selectNodes(idleWorkers.size) // Select next nodes to expand
         for ((w, node) <- idleWorkers.keySet zip nodes) {
           workers += w -> Some(node)
           w ! RequestTask(node)
@@ -137,10 +140,20 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
           if (config.printEnv) {
             log.print(List((s"${goal.env.pp}", Console.MAGENTA)))
           }
+          log.print(List((s"${w.path.name}: ${node.id}", Console.GREEN)))
           log.print(List((s"${goal.pp}", Console.BLUE)))
-          trace.add(node)
+
+          if (!config.printDerivations) {
+            println(getColor(w.path.name) + s"${node.id}")
+          }
         }
       }
+    }
+
+    private def getColor(actorName: String): String = actorName match {
+      case "0" => Console.GREEN
+      case "1" => Console.BLUE
+      case _   => Console.YELLOW
     }
   }
 
@@ -158,8 +171,8 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
   //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // Given a worklist, return some next nodes to work on
-  protected def selectNode(nWorkers: Int)
-                          (implicit config: SynConfig): List[OrNode] = {
+  protected def selectNodes(nWorkers: Int)
+                           (implicit config: SynConfig): List[OrNode] = {
     val num = math.min(nWorkers, worklist.size)
     (for (_ <- 0 until num) yield {
       val best = worklist.minBy(_.cost)
@@ -184,7 +197,6 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
     // Check if any of the expansions is a terminal
     expansions.find(_.subgoals.isEmpty) match {
       case Some(e) => {
-        trace.add(e, node)
         successLeaves = node :: successLeaves
         (Some(e.producer(Nil)), Nil, false)
       }
@@ -195,7 +207,7 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
           (e, i) <- expansions.zipWithIndex
           andNode = AndNode(i +: node.id, node, e)
           if isTerminatingExpansion(andNode) // termination check
-            nSubs = e.subgoals.size; () = trace.add(andNode, nSubs)
+            nSubs = e.subgoals.size
           (g, j) <- if (nSubs == 1) List((e.subgoals.head, -1)) else e.subgoals.zipWithIndex
         } yield {
           val extraCost = if (j == -1) 0 else e.subgoals.drop(j + 1).map(_.cost).sum
