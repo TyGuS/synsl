@@ -87,16 +87,14 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
         sendWork()
 
       case TaskDone(w, (sol, newNodes, isFailed)) =>
-        if (!config.printDerivations & sol.isEmpty & isFailed) {
-          println(getColor(w.path.name) + "Worker" + Console.RED + s" cannot expand goal: BACKTRACK")
+        if (sol.isEmpty & isFailed) {
+          print(Console.RED + s"Cannot expand goal: BACKTRACK.")
         }
         var solution: Option[Solution] = None
         for (optionTask <- workers.get(w)) {
           for (node <- optionTask) {
-            print(Console.WHITE + s"${worklist.map{_.id}.toString()}")
-            if (!config.printDerivations) {
-              println(getColor(w.path.name) + s"--------Done: ${node.id} puts ${newNodes.map{_.id}.toString()}")
-            }
+            println(getColor(w.path.name) + s"      -[Done:" + Console.WHITE + s" ${node.id} puts ${newNodes.map{_.id}.toString()}]")
+
             worklist = newNodes ++ worklist
             solution = sol.flatMap(node.succeed(_))
             if (isFailed) node.fail
@@ -116,13 +114,10 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
     }
 
     def sendWork() = {
+      println(Console.WHITE + s"${worklist.map{_.id}.toString()}")
+
       val (idleWorkers, workingWorkers) = workers.partition(_._2.isEmpty)
       assert(idleWorkers.nonEmpty)
-
-      val sz = worklist.length
-      log.print(List((s"Worklist ($sz): ${worklist.map(n => s"${n.pp()}[${n.cost}]").mkString(" ")}", Console.YELLOW)))
-      log.print(List((s"Succeeded leaves (${successLeaves.length}): ${successLeaves.map(n => s"${n.pp()}").mkString(" ")}", Console.YELLOW)))
-      stats.updateMaxWLSize(sz)
 
       if (worklist.isEmpty) {
         if (workingWorkers.isEmpty) {
@@ -133,19 +128,7 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
         for ((w, node) <- idleWorkers.keySet zip nodes) {
           workers += w -> Some(node)
           w ! RequestTask(node)
-
-          val goal = node.goal
-          stats.addExpandedGoal(node)
-          log.print(List((s"Expand: ${node.pp()}[${node.cost}]", Console.YELLOW))) //      <goal: ${node.goal.label.pp}>
-          if (config.printEnv) {
-            log.print(List((s"${goal.env.pp}", Console.MAGENTA)))
-          }
-          log.print(List((s"${w.path.name}: ${node.id}", Console.GREEN)))
-          log.print(List((s"${goal.pp}", Console.BLUE)))
-
-          if (!config.printDerivations) {
-            println(getColor(w.path.name) + s"${node.id}")
-          }
+          println(getColor(w.path.name) + s"${node.id}")
         }
       }
     }
@@ -153,7 +136,8 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
     private def getColor(actorName: String): String = actorName match {
       case "0" => Console.GREEN
       case "1" => Console.BLUE
-      case _   => Console.YELLOW
+      case "2" => Console.YELLOW
+      case _   => Console.MAGENTA
     }
   }
 
@@ -174,12 +158,9 @@ class ParallelSynthesis(tactic: Tactic, override implicit val log: Log, override
   protected def selectNodes(nWorkers: Int)
                            (implicit config: SynConfig): List[OrNode] = {
     val num = math.min(nWorkers, worklist.size)
-    (for (_ <- 0 until num) yield {
-      val best = worklist.minBy(_.cost)
-      val idx = worklist.indexOf(best)
-      worklist = worklist.take(idx) ++ worklist.drop(idx + 1)
-      best
-    }).toList
+    val res = worklist.take(num)
+    worklist = worklist.drop(num)
+    res
   }
 
   // Expand node and return either a new worklist or the final solution
